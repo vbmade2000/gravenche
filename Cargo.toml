@@ -6,3 +6,4 @@ authors = ["Malhar Vora"]
 
 
 [dependencies]
+csv = "1.1"
