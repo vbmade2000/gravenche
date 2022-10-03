@@ -6,6 +6,8 @@ use std::{
     process,
 };
 
+mod client;
+
 /// Processes command line arguments. Exits the process with code 1 if argument count is less than 2.
 fn get_command_line_args() -> Vec<String> {
     // Process command line args
