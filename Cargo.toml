@@ -7,3 +7,4 @@ authors = ["Malhar Vora"]
 
 [dependencies]
 csv = "1.1"
+tokio = { version = "1", features = ["full"] }
