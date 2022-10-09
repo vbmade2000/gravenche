@@ -22,7 +22,7 @@ fn get_csv_path(filename: &str) -> Result<PathBuf, Error> {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     // Process command line args
     let args = get_command_line_args();
 
@@ -31,6 +31,7 @@ async fn main() {
 
     let mut gravenche = Gravenche::new(csv_filepath, 100000);
 
-    gravenche.start().await;
+    gravenche.start().await?;
     gravenche.show_output().await;
+    Ok(())
 }

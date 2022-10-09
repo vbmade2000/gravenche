@@ -50,10 +50,10 @@ impl Gravenche {
     }
 
     // Read records from a CSV file and processes them.
-    async fn process_csv(&self) {
+    async fn process_csv(&self) -> anyhow::Result<()> {
         println!("Size: {:?}", mem::size_of::<Transaction>());
 
-        let file = File::open(&self.csv_path).unwrap();
+        let file = File::open(&self.csv_path)?;
 
         // Use of BufReader makes reading efficient by reading large chuk, infrequent reads.
         let buf_reader = BufReader::new(file);
@@ -63,9 +63,9 @@ impl Gravenche {
 
         let mut csv_reader = csv::Reader::from_reader(buf_reader);
 
-        let sender = self.sender.as_ref().unwrap();
+        let sender = self.sender.as_ref().expect("Unable to create a queue.");
         // Using an existing variable to store a record prevents memory allocation every time.
-        while csv_reader.read_record(&mut record).unwrap() {
+        while csv_reader.read_record(&mut record)? {
             /*  Convert received data to appropriate type. If conversion fails, we move on. */
             let trans_id: u32 = match &record[TRANSACTION_ID_INDEX].trim().parse() {
                 Ok(e) => *e,
@@ -98,21 +98,19 @@ impl Gravenche {
                 amount,
                 is_disputed: false,
             };
-            let r = sender.send(Command::Transaction(transaction)).await;
-            match r {
-                Ok(_) => {}
-                Err(e) => println!("ERROR: {:?}", e),
-            }
+            sender.send(Command::Transaction(transaction)).await?;
         }
 
         // Stop the Processor task
         let _ = sender.send(Command::Exit).await;
+        Ok(())
     }
 
     /// This method starts a transaction processor task and calls other required method(s) to start processing transaction.
-    pub async fn start(&mut self) {
+    pub async fn start(&mut self) -> anyhow::Result<()> {
         self.start_transaction_processor().await;
-        self.process_csv().await;
+        self.process_csv().await?;
+        Ok(())
     }
 
     // Start a tokio task that processes transactions.
