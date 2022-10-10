@@ -11,5 +11,6 @@ Gravenche accepts a CSV containing financial transactions and processes them.
 ```
 $ git clone https://github.com/vbmade2000/gravenche.git
 $ cd gravenche
+$ cargo build --release # Integraion tests requires release binary present.
 $ cargo test
 ```
