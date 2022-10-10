@@ -1,4 +1,4 @@
-use std::{env, io::Error, path::PathBuf, process};
+use std::{env, io::stdout, path::PathBuf, process};
 
 use gravenche::Gravenche;
 
@@ -17,8 +17,8 @@ fn get_command_line_args() -> Vec<String> {
 }
 
 /// Generates absolute path for supplied csv filename. Also, it verifies if filename exists.
-fn get_csv_path(filename: &str) -> Result<PathBuf, Error> {
-    std::path::Path::new(filename).canonicalize()
+fn get_csv_path(filename: &str) -> anyhow::Result<PathBuf> {
+    Ok(std::path::Path::new(filename).canonicalize()?)
 }
 
 #[tokio::main]
@@ -29,9 +29,10 @@ async fn main() -> anyhow::Result<()> {
     // Get absolute path of CSV filename.
     let csv_filepath = get_csv_path(&args[1]).unwrap();
 
-    let mut gravenche = Gravenche::new(csv_filepath, 100000);
+    let mut _stdout = stdout();
+    let mut gravenche = Gravenche::new(csv_filepath, 100000, _stdout);
 
     gravenche.start().await?;
-    gravenche.show_output().await;
+    gravenche.show_output().await?;
     Ok(())
 }

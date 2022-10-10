@@ -14,15 +14,19 @@
 //! 7. Output is shown using a method [Gravenche::show_output].
 
 use crate::types::{
-    Client, Clients, Command, ProcessedTransactions, Transaction, TransactionType, AMOUNT_INDEX,
-    CLIENT_ID_INDEX, TRANSACTION_ID_INDEX, TRANSACTION_TYPE_INDEX,
+    client::{Client, Clients},
+    other::Command,
+    transaction::{
+        ProcessedTransactions, Transaction, TransactionType, AMOUNT_INDEX, CLIENT_ID_INDEX,
+        TRANSACTION_ID_INDEX, TRANSACTION_TYPE_INDEX,
+    },
 };
-use std::mem;
+use std::io::Write;
 use std::{collections::HashMap, fs::File, io::BufReader, path::PathBuf, str::FromStr, sync::Arc};
 use tokio::sync::{mpsc, Mutex};
 
 /// The core of the whole crate. It processes all the transaction and update various data structures to reflect the transactions.
-pub struct Gravenche {
+pub struct Gravenche<T: Write> {
     /// Path to the CSV file containing transactions.
     csv_path: PathBuf,
     /// Datastorage for all the clients.
@@ -33,10 +37,12 @@ pub struct Gravenche {
     processed_transactions: ProcessedTransactions,
     /// Number of transactions allowed to be pushed in queue.
     num_transaction_allowed: i32,
+    /// Output stream to write to.
+    output_stream: T,
 }
 
-impl Gravenche {
-    pub fn new(csv_path: PathBuf, transactions_allowed: i32) -> Self {
+impl<T: Write> Gravenche<T> {
+    pub fn new(csv_path: PathBuf, transactions_allowed: i32, output_stream: T) -> Self {
         let clients = Arc::new(Mutex::new(HashMap::new()));
         let processed_transactions = Arc::new(Mutex::new(HashMap::new()));
 
@@ -46,13 +52,12 @@ impl Gravenche {
             sender: None,
             processed_transactions,
             num_transaction_allowed: transactions_allowed,
+            output_stream,
         }
     }
 
     // Read records from a CSV file and processes them.
     async fn process_csv(&self) -> anyhow::Result<()> {
-        println!("Size: {:?}", mem::size_of::<Transaction>());
-
         let file = File::open(&self.csv_path)?;
 
         // Use of BufReader makes reading efficient by reading large chuk, infrequent reads.
@@ -91,13 +96,7 @@ impl Gravenche {
                 Err(_) => 0.0,
             };
 
-            let transaction = Transaction {
-                id: trans_id,
-                _type,
-                client_id,
-                amount,
-                is_disputed: false,
-            };
+            let transaction = Transaction::new(trans_id, client_id, _type, amount);
             sender.send(Command::Transaction(transaction)).await?;
         }
 
@@ -144,7 +143,7 @@ impl Gravenche {
         clients: Clients,
         processed_transactions: ProcessedTransactions,
         mut rx: tokio::sync::mpsc::Receiver<Command>,
-    ) {
+    ) -> anyhow::Result<()> {
         let clients = clients.clone();
         let mut clients = clients.lock().await;
 
@@ -166,19 +165,10 @@ impl Gravenche {
 
                             if clients.contains_key(&client_id) {
                                 let current_client = clients.get_mut(&client_id).unwrap();
-                                // Modify client data only if Client is not locked.
-                                if !current_client.locked {
-                                    current_client.total += amount;
-                                    current_client.available += amount;
-                                }
+                                // We ignore the error here. So no need to bubble it up the call hierarchy.
+                                let _ = current_client.deposit(amount);
                             } else {
-                                let new_client = Client {
-                                    id: client_id,
-                                    total: amount,
-                                    available: amount,
-                                    held: 0.0,
-                                    locked: false,
-                                };
+                                let new_client = Client::new(client_id, amount);
                                 clients.insert(client_id, new_client);
                             }
                         }
@@ -194,16 +184,9 @@ impl Gravenche {
                             if clients.contains_key(&client_id) {
                                 let current_client = clients.get_mut(&client_id).unwrap();
                                 // Modify client data only if Client is not locked.
-                                if !current_client.locked {
-                                    // Allow withdrawl only if account has sufficient balance.
-                                    let available_fund = current_client.available;
-                                    if available_fund - withdrawl_amount > 0.0 {
-                                        current_client.total -= withdrawl_amount;
-                                        current_client.available -= withdrawl_amount;
-                                    }
-                                }
+                                let _ = current_client.withdraw(withdrawl_amount);
                             } /* else {
-                                  // Ignore the transaction.
+                                  // Log this transaction.
                               } */
                         }
                         TransactionType::Dispute => {
@@ -214,21 +197,18 @@ impl Gravenche {
                                     processed_transactions.get_mut(&transaction_id).unwrap();
                                 let disputed_amount = disputed_transaction.amount;
 
-                                // Modify client data only if Client is not locked.
-                                let current_client = clients.get_mut(&client_id).unwrap();
-                                if !current_client.locked {
-                                    let available_fund = current_client.available;
-                                    // Dispute only if enough amount is available
-                                    if available_fund - disputed_amount > 0.0 {
-                                        current_client.available -= disputed_amount;
-                                        current_client.held += disputed_amount;
-                                    }
-                                }
+                                if clients.contains_key(&client_id) {
+                                    // Modify client data only if Client is not locked.
+                                    let current_client = clients.get_mut(&client_id).unwrap();
+                                    let _ = current_client.raise_dispute(disputed_amount);
 
-                                // Flag the transaction as disputed
-                                disputed_transaction.is_disputed = true;
+                                    // Flag the transaction as disputed
+                                    disputed_transaction.mark_disputed();
+                                } /* else {
+                                      // Log this transaction.
+                                  } */
                             } /* else {
-                                  // Ignore
+                                  // Log this transaction.
                               } */
                         }
                         TransactionType::Resolve => {
@@ -237,22 +217,25 @@ impl Gravenche {
                             if processed_transactions.contains_key(&transaction_id) {
                                 let disputed_transaction =
                                     processed_transactions.get_mut(&transaction_id).unwrap();
-                                if disputed_transaction.is_disputed {
+                                if disputed_transaction.is_disputed() {
                                     let disputed_amount = disputed_transaction.amount;
 
-                                    let current_client = clients.get_mut(&client_id).unwrap();
-                                    // Modify client data only if Client is not locked.
-                                    if !current_client.locked {
-                                        current_client.available += disputed_amount;
-                                        current_client.held -= disputed_amount;
-                                    }
+                                    if clients.contains_key(&client_id) {
+                                        let current_client = clients.get_mut(&client_id).unwrap();
+                                        // Modify client data only if Client is not locked.
+                                        let _ = current_client.resolve_dispute(disputed_amount);
+                                    } /* else {
+                                          // Log this transaction.
+                                      } */
 
                                     // Flag the transaction as resolved
-                                    disputed_transaction.is_disputed = false;
+                                    disputed_transaction.mark_resolved();
                                 } /* else {
-                                      // Ignore for now.
+                                      // Log this transaction.
                                   } */
-                            }
+                            } /* else {
+                                  // Log this transaction.
+                              } */
                         }
                         TransactionType::Chargeback => {
                             let client_id = transaction.client_id;
@@ -260,21 +243,18 @@ impl Gravenche {
                             if processed_transactions.contains_key(&transaction_id) {
                                 let disputed_transaction =
                                     processed_transactions.get_mut(&transaction_id).unwrap();
-                                if disputed_transaction.is_disputed {
+                                if disputed_transaction.is_disputed() {
                                     let disputed_amount = disputed_transaction.amount;
 
                                     // Modify client data
-                                    let current_client = clients.get_mut(&client_id).unwrap();
-                                    current_client.total -= disputed_amount;
-                                    current_client.held -= disputed_amount;
-
-                                    // Chargeback occured so account must be locked.
-                                    current_client.locked = true;
-
-                                    // Flag the transaction as resolved
-                                    disputed_transaction.is_disputed = true;
+                                    if clients.contains_key(&client_id) {
+                                        let current_client = clients.get_mut(&client_id).unwrap();
+                                        let _ = current_client.chargeback(disputed_amount);
+                                    } /* else {
+                                          Log this transaction.
+                                      } */
                                 } /* else {
-                                      // Ignore for now.
+                                        Log this transaction.
                                   } */
                             }
                         }
@@ -285,23 +265,28 @@ impl Gravenche {
                 }
             }
         }
+        Ok(())
     }
 
     /// Show client data in tabular format.
-    pub async fn show_output(self) {
+    pub async fn show_output(&mut self) -> anyhow::Result<()> {
         let clients = self.clients.clone();
         let clients = clients.lock().await;
 
-        println!(
+        writeln!(
+            self.output_stream,
             "{0: >6} | {1: >10} | {2: >10} | {3: >10} | {4: >6}",
             "client", "available", "held", "total", "locked"
-        );
+        )?;
 
         for client in clients.iter() {
-            println!(
+            writeln!(
+                self.output_stream,
                 "{0: >6} | {1: >10} | {2: >10} | {3: >10} | {4: >6}",
                 client.0, client.1.available, client.1.held, client.1.total, client.1.locked
-            );
+            )?;
         }
+
+        Ok(())
     }
 }
