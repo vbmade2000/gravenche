@@ -103,3 +103,176 @@ impl Client {
 
 /// A HashMap to store data of all the clients.
 pub type Clients = Arc<Mutex<HashMap<u16, Client>>>;
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    // Tests deposit method happy path.
+    #[test]
+    fn test_deposit() {
+        // Prepare
+        let test_available_balance = 1000_f32;
+        let balance_after_deposit = test_available_balance + 1000_f32;
+        let mut client = Client::new(1, test_available_balance);
+
+        // Execute
+        client.deposit(1000_f32).unwrap();
+
+        // Assert
+        assert_eq!(client.available, balance_after_deposit);
+        assert_eq!(client.total, balance_after_deposit);
+        assert_eq!(client.held, 0.0);
+    }
+
+    // Tests deposit method when client is locked.
+    #[test]
+    #[should_panic]
+    fn test_deposit_when_locked() {
+        // Prepare
+        let test_available_balance = 1000_f32;
+        let mut client = Client::new(1, test_available_balance);
+
+        // Execute
+        client.chargeback(1000_f32).unwrap();
+        client.deposit(1000_f32).unwrap();
+    }
+
+    // Tests withdraw method happy path.
+    #[test]
+    fn test_withdraw() {
+        // Prepare
+        let test_available_balance = 1000_f32;
+        let balance_after_withdraw = test_available_balance - 500_f32;
+        let mut client = Client::new(1, test_available_balance);
+
+        // Execute
+        client.withdraw(500_f32).unwrap();
+
+        // Assert
+        assert_eq!(client.available, balance_after_withdraw);
+        assert_eq!(client.total, balance_after_withdraw);
+        assert_eq!(client.held, 0.0);
+    }
+
+    // Tests withdraw method when client is locked.
+    #[test]
+    #[should_panic]
+    fn test_withdraw_when_locked() {
+        // Prepare
+        let test_available_balance = 1000_f32;
+        let mut client = Client::new(1, test_available_balance);
+
+        // Execute
+        client.chargeback(1000_f32).unwrap();
+        client.withdraw(500_f32).unwrap();
+    }
+
+    // Tests withdraw method in case of insufficient balance.
+    #[test]
+    #[should_panic]
+    fn test_withdraw_insufficient_balance() {
+        // Prepare
+        let test_available_balance = 1000_f32;
+        let mut client = Client::new(1, test_available_balance);
+
+        // Execute
+        client.chargeback(1000_f32).unwrap();
+        client.withdraw(500_f32).unwrap();
+    }
+
+    // raise_dispute happy path.
+    #[test]
+    fn test_dispute() {
+        // Prepare
+        let mut client = Client::new(1, 0.0);
+        client.deposit(1000.0).unwrap();
+
+        // Execute
+        client.raise_dispute(430.0).unwrap();
+
+        // Assert
+        assert_eq!(client.available, 570.0);
+        assert_eq!(client.total, 1000.0);
+        assert_eq!(client.held, 430.0);
+    }
+
+    // raise_dispute in case of insufficient funds.
+    #[test]
+    #[should_panic]
+    fn test_dispute_when_insufficient_balance() {
+        // Prepare
+        let mut client = Client::new(1, 0.0);
+
+        // Execute
+        client.raise_dispute(430.0).unwrap();
+    }
+
+    // raise_dispute in case of locked client.
+    #[test]
+    #[should_panic]
+    fn test_dispute_when_locked() {
+        // Prepare
+        let mut client = Client::new(1, 10000.0);
+        client.chargeback(10000.0).unwrap();
+
+        // Execute
+        client.raise_dispute(545.0).unwrap();
+    }
+
+    // resolve_dispute happy path.
+    #[test]
+    fn test_resolve_dispute() {
+        // Prepare
+        let mut client = Client::new(1, 10000.0);
+        client.raise_dispute(5000.0).unwrap();
+
+        // Execute
+        client.resolve_dispute(5000.0).unwrap();
+
+        // Assert
+        assert_eq!(client.available, 10000.0);
+        assert_eq!(client.held, 0.0);
+        assert_eq!(client.total, 10000.0);
+    }
+
+    // resolve_dispute when client is locked.
+    #[test]
+    #[should_panic]
+    fn test_resolve_dispute_when_locked() {
+        // Prepare
+        let mut client = Client::new(1, 10000.0);
+        client.raise_dispute(5000.0).unwrap();
+        client.chargeback(5000.0).unwrap();
+
+        // Execute
+        client.resolve_dispute(5000.0).unwrap();
+    }
+
+    // chargeback happy path.
+    #[test]
+    fn test_chargeback() {
+        // Prepare
+        let mut client = Client::new(1, 10000.0);
+        client.raise_dispute(5000.0).unwrap();
+
+        // Execute
+        client.chargeback(5000.0).unwrap();
+
+        // Assert
+        assert_eq!(client.locked, true);
+    }
+
+    // chargeback in case of already chargedback client.
+    #[test]
+    #[should_panic]
+    fn test_chargeback_already_chargeback() {
+        // Prepare
+        let mut client = Client::new(1, 10000.0);
+        client.chargeback(5000.0).unwrap();
+
+        // Execute
+        client.chargeback(5000.0).unwrap();
+    }
+}
